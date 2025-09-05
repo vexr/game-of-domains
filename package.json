@@ -1,0 +1,13 @@
+{
+  "name": "game-of-domains",
+  "private": true,
+  "packageManager": "yarn@4.6.0",
+  "type": "commonjs",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "yarn workspaces foreach -pt -A run typecheck",
+    "start": "yarn workspace crossing-the-narrow-sea start"
+  }
+}

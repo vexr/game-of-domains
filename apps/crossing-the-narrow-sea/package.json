@@ -1,0 +1,25 @@
+{
+  "name": "crossing-the-narrow-sea",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "cross-fetch": "^4.1.0",
+    "dotenv": "^17.2.2",
+    "graphql": "^16.11.0",
+    "graphql-request": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.19.1",
+    "typescript": "^5.9.2"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "introspect": "tsx src/introspect.ts",
+    "derive-domain-window": "tsx src/derive-domain-window.ts",
+    "counts": "MODE=counts tsx src/index.ts",
+    "distinct-counts": "MODE=distinct-counts tsx src/index.ts"
+  }
+}
