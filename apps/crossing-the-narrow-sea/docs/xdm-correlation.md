@@ -75,12 +75,10 @@ Notes:
 ## Step-by-Step Correlation Procedure
 
 1. From source transfer extrinsic (user call):
-
    - Capture `message_id` and `dst_chain_id` from `OutgoingTransferInitiated`.
    - Alternatively, derive `message_id` from messenger `OutboxMessage { channel_id, nonce }`.
 
 2. On destination chain:
-
    - Look up `IncomingTransferSuccessful` with the same `message_id` and verify `amount`.
    - Optionally, also observe `InboxMessageResponse { channel_id, nonce }`.
 

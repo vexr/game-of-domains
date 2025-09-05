@@ -63,11 +63,7 @@
 - Raw Domain → Consensus export (no aggregates):
 
 ```graphql
-query ExportD2C(
-  $limit: Int!
-  $offset: Int!
-  $where: domain_auto_evm_transfers_bool_exp
-) {
+query ExportD2C($limit: Int!, $offset: Int!, $where: domain_auto_evm_transfers_bool_exp) {
   domain_auto_evm_transfers(
     where: $where
     order_by: { block_height: asc }
@@ -94,11 +90,7 @@ query ExportD2C(
 - Raw Consensus → Domain export:
 
 ```graphql
-query ExportC2D(
-  $limit: Int!
-  $offset: Int!
-  $where: consensus_transfers_bool_exp
-) {
+query ExportC2D($limit: Int!, $offset: Int!, $where: consensus_transfers_bool_exp) {
   consensus_transfers(
     where: $where
     order_by: { block_height: asc }
@@ -178,19 +170,16 @@ query ExportC2D(
 ### Exports: flat-file and manifest spec
 
 - Artifacts:
-
   - `d2c_transfers.*` (domain → consensus raw rows)
   - `c2d_transfers.*` (consensus → domain raw rows)
   - `counts_per_wallet.json` (optional local aggregate)
 
 - Suggested formats:
-
   - NDJSON (newline-delimited JSON) for streaming-friendly large exports.
   - CSV for spreadsheet tooling; consider quoting and explicit schema docs.
   - Optional: Parquet for columnar analytics if needed (via DuckDB or similar).
 
 - File layout and naming (example):
-
   - `exports/YYYYMMDD-HHMMSS/manifest.json`
   - `exports/YYYYMMDD-HHMMSS/d2c_transfers.ndjson` (domain → consensus)
   - `exports/YYYYMMDD-HHMMSS/c2d_transfers.ndjson` (consensus → domain)
@@ -221,12 +210,10 @@ query ExportC2D(
 ```
 
 - Planned CLI support (to be implemented):
-
   - `yarn export` → creates a timestamped directory under `OUTPUT_DIR` and writes raw NDJSON files and a `manifest.json`.
   - Env controls: `OUTPUT_DIR`, `EXPORT_FORMAT` (ndjson|csv), `EXPORT_GZIP` (true|false), `PAGE_SIZE`, `MAX_PAGES`, `CONSENSUS_START_HEIGHT`, `CONSENSUS_END_HEIGHT`, plus derived `domainStartHeight`/`domainEndHeight`.
 
 - Working offline from NDJSON examples:
-
   - Count per wallet (Domain → Consensus) with `jq`:
     - `jq -r 'select(.from != null) | .from' d2c_transfers.ndjson | sort | uniq -c | sort -nr | head -50`
   - Filter by height range:
