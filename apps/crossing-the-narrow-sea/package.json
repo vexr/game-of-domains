@@ -20,6 +20,6 @@
     "introspect": "tsx src/introspect.ts",
     "derive-domain-window": "tsx src/derive-domain-window.ts",
     "counts": "MODE=counts tsx src/index.ts",
-    "distinct-counts": "MODE=distinct-counts tsx src/index.ts"
+    "export": "tsx src/export.ts"
   }
 }
