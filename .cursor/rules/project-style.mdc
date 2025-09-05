@@ -1,0 +1,38 @@
+---
+description: Project-wide TypeScript and repo conventions
+globs:
+alwaysApply: true
+---
+
+# Project Conventions
+
+- Use TypeScript for all new files
+- Prefer yarn over npm (no PnP; use node_modules)
+- Use arrow functions instead of function declarations
+- Prefer immutability and functional programming patterns
+- Avoid classes; use functional patterns
+- Use strict TypeScript configuration
+
+## Code Style
+
+- Use 2 spaces for indentation
+- Use single quotes for strings
+- Add trailing commas in multiline objects/arrays
+- Use `as const` where appropriate
+- Prefer `interface` over `type` for object shapes
+- Use meaningful variable and function names
+
+## File Organization
+
+- Use kebab-case for file names
+- Group related files in folders
+- Keep modules small and focused
+- Separate business logic from presentation logic
+
+## Import/Export
+
+- Use named exports over default exports
+- Group imports: external libraries, internal modules, relative imports
+- Use absolute imports with path mapping when configured
+
+Reference: @/README.md
