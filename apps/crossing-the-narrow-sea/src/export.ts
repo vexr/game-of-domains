@@ -1,6 +1,6 @@
 import { GraphQLClient, gql } from 'graphql-request'
 import fetch from 'cross-fetch'
-import { mkdirSync, createWriteStream, writeFileSync } from 'fs'
+import { mkdirSync, createWriteStream, writeFileSync, existsSync, renameSync } from 'fs'
 import { join, relative } from 'path'
 
 /**
@@ -270,11 +270,27 @@ const fetchC2DPages =
 
 /** Entry point: orchestrates export, writing artifacts and manifest. */
 const main = async (): Promise<void> => {
-  const timestamp = new Date()
-    .toISOString()
-    .replace(/[-:.TZ]/g, '')
-    .slice(0, 14)
-  const dir = join(config.outputDir, timestamp)
+  const formatStamp = (d: Date) =>
+    d
+      .toISOString()
+      .replace(/[-:.TZ]/g, '')
+      .slice(0, 14)
+  const baseDir = config.outputDir
+  mkdirSync(baseDir, { recursive: true })
+
+  // Archive existing latest → timestamped folder before starting new export
+  const latestDir = join(baseDir, 'latest')
+  if (existsSync(latestDir)) {
+    let dest = join(baseDir, formatStamp(new Date()))
+    if (existsSync(dest)) {
+      let i = 1
+      while (existsSync(`${dest}-${i}`)) i++
+      dest = `${dest}-${i}`
+    }
+    renameSync(latestDir, dest)
+  }
+
+  const dir = latestDir
   mkdirSync(dir, { recursive: true })
 
   const whereD2C = toWhereD2C(config.domainStart, config.domainEnd)

@@ -6,4 +6,5 @@
 !.yarn/versions
 
 /node_modules
-exports/
+**/exports/*
+!**/exports/latest/
