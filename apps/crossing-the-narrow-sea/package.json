@@ -17,9 +17,9 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "introspect": "tsx src/introspect.ts",
-    "derive-domain-window": "tsx src/derive-domain-window.ts",
-    "counts": "tsx src/counts.ts",
-    "export": "tsx src/export.ts"
+    "introspect": "tsx src/indexer-based/introspect.ts",
+    "derive-domain-window": "tsx src/indexer-based/derive-domain-window.ts",
+    "counts": "tsx src/indexer-based/counts.ts",
+    "export": "tsx src/indexer-based/export.ts"
   }
 }

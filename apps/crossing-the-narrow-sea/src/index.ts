@@ -1,7 +1,5 @@
 const main = async (): Promise<void> => {
-  const endpoint =
-    process.env.SUBQL_ENDPOINT || 'https://subql.blue.taurus.subspace.network/v1/graphql'
-  console.log('[crossing-the-narrow-sea] Ready. Endpoint:', endpoint)
+  console.log('[crossing-the-narrow-sea] Ready. ')
 }
 
 main().catch((err) => {
