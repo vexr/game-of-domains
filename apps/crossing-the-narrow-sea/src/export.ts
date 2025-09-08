@@ -121,13 +121,13 @@ const toWhereD2C = (domainStart?: number, domainEnd?: number) => {
   if (typeof domainStart === 'number') {
     where.block_height = {
       ...(where.block_height || {}),
-      _gte: String(domainStart),
+      _gte: domainStart,
     }
   }
   if (typeof domainEnd === 'number') {
     where.block_height = {
       ...(where.block_height || {}),
-      _lte: String(domainEnd),
+      _lte: domainEnd,
     }
   }
   return where
@@ -138,19 +138,19 @@ const toWhereD2C = (domainStart?: number, domainEnd?: number) => {
  */
 const toWhereC2D = (consensusStart?: number, consensusEnd?: number) => {
   const where: any = {
-    from_chain: { _eq: 'consensus:null' },
+    from_chain: { _eq: 'consensus' },
     to_chain: { _eq: 'domain:0' },
   }
   if (typeof consensusStart === 'number') {
     where.block_height = {
       ...(where.block_height || {}),
-      _gte: String(consensusStart),
+      _gte: consensusStart,
     }
   }
   if (typeof consensusEnd === 'number') {
     where.block_height = {
       ...(where.block_height || {}),
-      _lte: String(consensusEnd),
+      _lte: consensusEnd,
     }
   }
   return where
