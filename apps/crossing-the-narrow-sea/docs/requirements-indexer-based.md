@@ -35,7 +35,6 @@
 - Wallet identity:
   - Count by source wallet (the address that initiated the transfer).
   - EVM addresses (domain:0) and Substrate SS58 addresses (consensus) are distinct address spaces.
-  - Do NOT normalize EVM address casing; use exact equality.
 - Time window:
   - Default: Consensus start block 1,740,677 (domain block 1,060,691) to Consensus end block 2,460,732 (domain block 1,561,826)
   - Optional filters via environment variables by block height (recommended: align to the trial window blocks noted above).
