@@ -19,7 +19,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "introspect": "tsx src/introspect.ts",
     "derive-domain-window": "tsx src/derive-domain-window.ts",
-    "counts": "MODE=counts tsx src/index.ts",
+    "counts": "tsx src/counts.ts",
     "export": "tsx src/export.ts"
   }
 }
