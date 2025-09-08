@@ -14,6 +14,8 @@ interface ExportConfig {
   outputDir: string
   exportFormat: 'ndjson' | 'csv'
   logEveryPages: number
+  retryMax: number
+  retryBaseMs: number
   consensusStart?: number
   consensusEnd?: number
   domainStart?: number
@@ -32,6 +34,8 @@ const config: ExportConfig = {
   outputDir: process.env.OUTPUT_DIR || 'exports',
   exportFormat: (process.env.EXPORT_FORMAT || 'ndjson') as 'ndjson' | 'csv',
   logEveryPages: Number(process.env.LOG_EVERY_PAGES || 25),
+  retryMax: Number(process.env.RETRY_MAX || 5),
+  retryBaseMs: Number(process.env.RETRY_BASE_MS || 500),
   consensusStart: process.env.CONSENSUS_START_HEIGHT
     ? Number(process.env.CONSENSUS_START_HEIGHT)
     : undefined,
@@ -46,6 +50,8 @@ const config: ExportConfig = {
 
 /** Shared GraphQL client instance. */
 const client = new GraphQLClient(endpoint, { fetch })
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /**
  * Domain → Consensus transfers query.
@@ -196,6 +202,7 @@ const writeRowsConcurrent = async (
     concurrency: number
   },
   writer: (rows: TransferRow[]) => Promise<void>,
+  onProgress?: (info: { pageIndex: number; rowsInPage: number; totalRows: number }) => void,
 ): Promise<number> => {
   const { fetchPage, pageSize } = options
   const concurrency = Math.max(1, options.concurrency)
@@ -209,8 +216,10 @@ const writeRowsConcurrent = async (
   if (stride <= 0) return totalRows
 
   const inFlight: Map<number, Promise<TransferRow[]>> = new Map()
+  const attempts: Map<number, number> = new Map()
   const startFetch = (pageIdx: number) => {
     const offset = pageIdx * stride
+    attempts.set(pageIdx, (attempts.get(pageIdx) ?? 0) + 1)
     inFlight.set(pageIdx, fetchPage(offset, pageSize))
   }
   const seed = Math.max(0, concurrency - 1)
@@ -221,13 +230,26 @@ const writeRowsConcurrent = async (
   for (let page = 1; !done; page++) {
     const p = inFlight.get(page)
     if (!p) break
-    const rows = await p
+    let rows: TransferRow[]
+    try {
+      rows = await p
+    } catch (e) {
+      const tries = attempts.get(page) ?? 1
+      if (tries > config.retryMax) throw e
+      const delay = Math.min(8000, config.retryBaseMs * Math.pow(2, tries - 1))
+      await sleep(delay)
+      startFetch(page)
+      // retry same page index
+      page -= 1
+      continue
+    }
     inFlight.delete(page)
     if (rows.length === 0) {
       done = true
     } else {
       await writer(rows)
       totalRows += rows.length
+      if (onProgress) onProgress({ pageIndex: page, rowsInPage: rows.length, totalRows })
       if (rows.length < stride) {
         done = true
       }
@@ -288,22 +310,40 @@ const escapeCsv = (v: unknown): string => {
 const fetchD2CPages =
   (where: any) =>
   async (offset: number, limit: number): Promise<TransferRow[]> => {
-    const res = await client.request<{
-      domain_auto_evm_transfers: TransferRow[]
-    }>(EXPORT_D2C, { where, offset, limit })
-    return res.domain_auto_evm_transfers
+    for (let attempt = 0; attempt <= config.retryMax; attempt++) {
+      try {
+        const res = await client.request<{
+          domain_auto_evm_transfers: TransferRow[]
+        }>(EXPORT_D2C, { where, offset, limit })
+        return res.domain_auto_evm_transfers
+      } catch (e) {
+        const delay = Math.min(8000, config.retryBaseMs * Math.pow(2, attempt))
+        if (attempt === config.retryMax) throw e
+        await new Promise((r) => setTimeout(r, delay))
+      }
+    }
+    return []
   }
 
 /** Page fetcher factory for C2D query. */
 const fetchC2DPages =
   (where: any) =>
   async (offset: number, limit: number): Promise<TransferRow[]> => {
-    const res = await client.request<{ consensus_transfers: TransferRow[] }>(EXPORT_C2D, {
-      where,
-      offset,
-      limit,
-    })
-    return res.consensus_transfers
+    for (let attempt = 0; attempt <= config.retryMax; attempt++) {
+      try {
+        const res = await client.request<{ consensus_transfers: TransferRow[] }>(EXPORT_C2D, {
+          where,
+          offset,
+          limit,
+        })
+        return res.consensus_transfers
+      } catch (e) {
+        const delay = Math.min(8000, config.retryBaseMs * Math.pow(2, attempt))
+        if (attempt === config.retryMax) throw e
+        await new Promise((r) => setTimeout(r, delay))
+      }
+    }
+    return []
   }
 
 /** Entry point: orchestrates export, writing artifacts and manifest. */
@@ -368,6 +408,7 @@ const main = async (): Promise<void> => {
         2,
       ),
     )
+    const started = Date.now()
     const out = createOutput(dir, baseName, config.exportFormat)
     if (config.exportFormat === 'csv') {
       await out.write(FIELDS.join(',') + '\n')
@@ -377,9 +418,46 @@ const main = async (): Promise<void> => {
       ? writeRowsConcurrent(
           { fetchPage, pageSize: config.pageSize, concurrency: config.concurrency },
           async (rows) => writeRows(rows, out, config.exportFormat),
+          ({ pageIndex, rowsInPage, totalRows }) => {
+            const pageNumber = pageIndex + 1
+            if (pageNumber === 1 || pageNumber % config.logEveryPages === 0) {
+              console.log(
+                JSON.stringify(
+                  {
+                    message: `[export] ${label} progress`,
+                    page: pageNumber,
+                    rowsInPage,
+                    totalRows,
+                    elapsedMs: Date.now() - started,
+                  },
+                  null,
+                  2,
+                ),
+              )
+            }
+          },
         )
-      : writeRowsSequential({ fetchPage, pageSize: config.pageSize }, async (rows) =>
-          writeRows(rows, out, config.exportFormat),
+      : writeRowsSequential(
+          { fetchPage, pageSize: config.pageSize },
+          async (rows) => writeRows(rows, out, config.exportFormat),
+          ({ pageIndex, rowsInPage, totalRows }) => {
+            const pageNumber = pageIndex + 1
+            if (pageNumber === 1 || pageNumber % config.logEveryPages === 0) {
+              console.log(
+                JSON.stringify(
+                  {
+                    message: `[export] ${label} progress`,
+                    page: pageNumber,
+                    rowsInPage,
+                    totalRows,
+                    elapsedMs: Date.now() - started,
+                  },
+                  null,
+                  2,
+                ),
+              )
+            }
+          },
         ))
     await out.end()
     console.log(JSON.stringify({ message: `[export] ${label} done`, rows: count }, null, 2))
