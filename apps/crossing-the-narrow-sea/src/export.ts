@@ -1,6 +1,14 @@
 import { GraphQLClient, gql } from 'graphql-request'
 import fetch from 'cross-fetch'
-import { mkdirSync, createWriteStream, writeFileSync, existsSync, renameSync } from 'fs'
+import {
+  mkdirSync,
+  createWriteStream,
+  writeFileSync,
+  existsSync,
+  renameSync,
+  statSync,
+  createReadStream,
+} from 'fs'
 import { join, relative } from 'path'
 
 /**
@@ -16,6 +24,7 @@ interface ExportConfig {
   logEveryPages: number
   retryMax: number
   retryBaseMs: number
+  appendLatest: boolean
   consensusStart?: number
   consensusEnd?: number
   domainStart?: number
@@ -36,6 +45,7 @@ const config: ExportConfig = {
   logEveryPages: Number(process.env.LOG_EVERY_PAGES || 25),
   retryMax: Number(process.env.RETRY_MAX || 5),
   retryBaseMs: Number(process.env.RETRY_BASE_MS || 500),
+  appendLatest: String(process.env.APPEND || 'false').toLowerCase() === 'true',
   consensusStart: process.env.CONSENSUS_START_HEIGHT
     ? Number(process.env.CONSENSUS_START_HEIGHT)
     : undefined,
@@ -171,12 +181,13 @@ const writeRowsSequential = async (
   options: {
     fetchPage: (offset: number, limit: number) => Promise<TransferRow[]>
     pageSize: number
+    startOffset?: number
   },
   writer: (rows: TransferRow[]) => Promise<void>,
   onProgress?: (info: { pageIndex: number; rowsInPage: number; totalRows: number }) => void,
 ): Promise<number> => {
   const { fetchPage, pageSize } = options
-  let offset = 0
+  let offset = options.startOffset ?? 0
   let rowCount = 0
   let pageIndex = 0
   for (;;) {
@@ -200,6 +211,7 @@ const writeRowsConcurrent = async (
     fetchPage: (offset: number, limit: number) => Promise<TransferRow[]>
     pageSize: number
     concurrency: number
+    startOffset?: number
   },
   writer: (rows: TransferRow[]) => Promise<void>,
   onProgress?: (info: { pageIndex: number; rowsInPage: number; totalRows: number }) => void,
@@ -208,7 +220,8 @@ const writeRowsConcurrent = async (
   const concurrency = Math.max(1, options.concurrency)
 
   // Page 0 determines effective stride (may be less than requested pageSize)
-  const first = await fetchPage(0, pageSize)
+  const initialOffset = options.startOffset ?? 0
+  const first = await fetchPage(initialOffset, pageSize)
   if (first.length === 0) return 0
   await writer(first)
   let totalRows = first.length
@@ -218,7 +231,7 @@ const writeRowsConcurrent = async (
   const inFlight: Map<number, Promise<TransferRow[]>> = new Map()
   const attempts: Map<number, number> = new Map()
   const startFetch = (pageIdx: number) => {
-    const offset = pageIdx * stride
+    const offset = initialOffset + pageIdx * stride
     attempts.set(pageIdx, (attempts.get(pageIdx) ?? 0) + 1)
     inFlight.set(pageIdx, fetchPage(offset, pageSize))
   }
@@ -266,10 +279,13 @@ const writeRowsConcurrent = async (
 /**
  * Create a backpressure-aware file writer for the given output artifact.
  */
-const createOutput = (dir: string, baseName: string, format: 'ndjson' | 'csv') => {
+const createOutput = (dir: string, baseName: string, format: 'ndjson' | 'csv', append: boolean) => {
   const ext = format === 'ndjson' ? '.ndjson' : '.csv'
   const filePath = join(dir, `${baseName}${ext}`)
-  const fileStream = createWriteStream(filePath, { encoding: 'utf8' })
+  const fileStream = createWriteStream(filePath, {
+    encoding: 'utf8',
+    flags: append ? 'a' : 'w',
+  })
   const write = (data: string): Promise<void> =>
     new Promise((resolve) => {
       const ok = (fileStream as any).write(data)
@@ -278,6 +294,39 @@ const createOutput = (dir: string, baseName: string, format: 'ndjson' | 'csv') =
     })
   const end = (): Promise<void> => new Promise((resolve) => (fileStream as any).end(resolve))
   return { filePath, write, end }
+}
+
+/**
+ * Count existing data rows in an artifact file to compute resume offset.
+ * For CSV, subtract the header line when present.
+ */
+const countExistingRows = async (filePath: string, format: 'ndjson' | 'csv'): Promise<number> => {
+  try {
+    if (!existsSync(filePath)) return 0
+    const size = statSync(filePath).size
+    if (size === 0) return 0
+    return await new Promise<number>((resolve) => {
+      let lineCount = 0
+      const stream = createReadStream(filePath, { encoding: 'utf8' })
+      stream.on('data', (chunk: string | Buffer) => {
+        const data = typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+        for (let i = 0; i < data.length; i++) {
+          if (data.charCodeAt(i) === 10) lineCount += 1 // '\n'
+        }
+      })
+      stream.on('error', () => resolve(0))
+      stream.on('end', () => {
+        if (format === 'csv' && lineCount > 0) {
+          // First line is header
+          resolve(Math.max(0, lineCount - 1))
+        } else {
+          resolve(lineCount)
+        }
+      })
+    })
+  } catch {
+    return 0
+  }
 }
 
 /** Stable field ordering for CSV output. */
@@ -356,9 +405,9 @@ const main = async (): Promise<void> => {
   const baseDir = config.outputDir
   mkdirSync(baseDir, { recursive: true })
 
-  // Archive existing latest → timestamped folder before starting new export
   const latestDir = join(baseDir, 'latest')
-  if (existsSync(latestDir)) {
+  if (!config.appendLatest && existsSync(latestDir)) {
+    // Archive existing latest → timestamped folder before starting new export
     let dest = join(baseDir, formatStamp(new Date()))
     if (existsSync(dest)) {
       let i = 1
@@ -401,22 +450,39 @@ const main = async (): Promise<void> => {
     baseName: string,
     fetchFactory: (w: any) => (offset: number, limit: number) => Promise<TransferRow[]>,
   ): Promise<{ count: number; artifactPath: string }> => {
+    const started = Date.now()
+    const out = createOutput(dir, baseName, config.exportFormat, config.appendLatest)
+    const resumeOffset = config.appendLatest
+      ? await countExistingRows(out.filePath, config.exportFormat)
+      : 0
     console.log(
       JSON.stringify(
-        { message: `[export] ${label} start`, where, pageSize: config.pageSize },
+        {
+          message: `[export] ${label} start`,
+          where,
+          pageSize: config.pageSize,
+          resumeOffset,
+        },
         null,
         2,
       ),
     )
-    const started = Date.now()
-    const out = createOutput(dir, baseName, config.exportFormat)
     if (config.exportFormat === 'csv') {
-      await out.write(FIELDS.join(',') + '\n')
+      const fileExists = existsSync(out.filePath)
+      const isEmpty = !fileExists || statSync(out.filePath).size === 0
+      if (isEmpty) {
+        await out.write(FIELDS.join(',') + '\n')
+      }
     }
     const fetchPage = fetchFactory(where)
     const count = await (config.concurrency > 1
       ? writeRowsConcurrent(
-          { fetchPage, pageSize: config.pageSize, concurrency: config.concurrency },
+          {
+            fetchPage,
+            pageSize: config.pageSize,
+            concurrency: config.concurrency,
+            startOffset: resumeOffset,
+          },
           async (rows) => writeRows(rows, out, config.exportFormat),
           ({ pageIndex, rowsInPage, totalRows }) => {
             const pageNumber = pageIndex + 1
@@ -429,6 +495,7 @@ const main = async (): Promise<void> => {
                     rowsInPage,
                     totalRows,
                     elapsedMs: Date.now() - started,
+                    resumeOffset,
                   },
                   null,
                   2,
@@ -438,7 +505,7 @@ const main = async (): Promise<void> => {
           },
         )
       : writeRowsSequential(
-          { fetchPage, pageSize: config.pageSize },
+          { fetchPage, pageSize: config.pageSize, startOffset: resumeOffset },
           async (rows) => writeRows(rows, out, config.exportFormat),
           ({ pageIndex, rowsInPage, totalRows }) => {
             const pageNumber = pageIndex + 1
@@ -451,6 +518,7 @@ const main = async (): Promise<void> => {
                     rowsInPage,
                     totalRows,
                     elapsedMs: Date.now() - started,
+                    resumeOffset,
                   },
                   null,
                   2,
