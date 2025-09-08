@@ -13,6 +13,7 @@ interface ExportConfig {
   concurrency: number
   outputDir: string
   exportFormat: 'ndjson' | 'csv'
+  logEveryPages: number
   consensusStart?: number
   consensusEnd?: number
   domainStart?: number
@@ -30,6 +31,7 @@ const config: ExportConfig = {
   concurrency: Number(process.env.CONCURRENCY || 6),
   outputDir: process.env.OUTPUT_DIR || 'exports',
   exportFormat: (process.env.EXPORT_FORMAT || 'ndjson') as 'ndjson' | 'csv',
+  logEveryPages: Number(process.env.LOG_EVERY_PAGES || 25),
   consensusStart: process.env.CONSENSUS_START_HEIGHT
     ? Number(process.env.CONSENSUS_START_HEIGHT)
     : undefined,
@@ -119,13 +121,13 @@ const toWhereD2C = (domainStart?: number, domainEnd?: number) => {
   if (typeof domainStart === 'number') {
     where.block_height = {
       ...(where.block_height || {}),
-      _gte: domainStart,
+      _gte: String(domainStart),
     }
   }
   if (typeof domainEnd === 'number') {
     where.block_height = {
       ...(where.block_height || {}),
-      _lte: domainEnd,
+      _lte: String(domainEnd),
     }
   }
   return where
@@ -142,25 +144,52 @@ const toWhereC2D = (consensusStart?: number, consensusEnd?: number) => {
   if (typeof consensusStart === 'number') {
     where.block_height = {
       ...(where.block_height || {}),
-      _gte: consensusStart,
+      _gte: String(consensusStart),
     }
   }
   if (typeof consensusEnd === 'number') {
     where.block_height = {
       ...(where.block_height || {}),
-      _lte: consensusEnd,
+      _lte: String(consensusEnd),
     }
   }
   return where
 }
 
 /**
- * Pulls pages concurrently while writing them in-order to preserve global sort order.
- * - Schedules N initial pages (concurrency) and advances a sliding window.
- * - Applies backpressure via the provided writer function.
+ * Sequential pagination that advances by the actual number of rows returned.
+ * This avoids skipping data when the server enforces a lower per-page max than requested.
  * Returns the total number of rows written.
  */
-const writeRowsWithConcurrency = async (
+const writeRowsSequential = async (
+  options: {
+    fetchPage: (offset: number, limit: number) => Promise<TransferRow[]>
+    pageSize: number
+  },
+  writer: (rows: TransferRow[]) => Promise<void>,
+  onProgress?: (info: { pageIndex: number; rowsInPage: number; totalRows: number }) => void,
+): Promise<number> => {
+  const { fetchPage, pageSize } = options
+  let offset = 0
+  let rowCount = 0
+  let pageIndex = 0
+  for (;;) {
+    const rows = await fetchPage(offset, pageSize)
+    if (rows.length === 0) break
+    await writer(rows)
+    rowCount += rows.length
+    offset += rows.length
+    if (onProgress) onProgress({ pageIndex, rowsInPage: rows.length, totalRows: rowCount })
+    pageIndex += 1
+  }
+  return rowCount
+}
+
+/**
+ * Concurrent pagination with deterministic ordering.
+ * Detects effective stride from the first page and fetches next pages in parallel.
+ */
+const writeRowsConcurrent = async (
   options: {
     fetchPage: (offset: number, limit: number) => Promise<TransferRow[]>
     pageSize: number
@@ -168,39 +197,48 @@ const writeRowsWithConcurrency = async (
   },
   writer: (rows: TransferRow[]) => Promise<void>,
 ): Promise<number> => {
-  const { fetchPage, pageSize, concurrency } = options
-  let rowCount = 0
+  const { fetchPage, pageSize } = options
+  const concurrency = Math.max(1, options.concurrency)
+
+  // Page 0 determines effective stride (may be less than requested pageSize)
+  const first = await fetchPage(0, pageSize)
+  if (first.length === 0) return 0
+  await writer(first)
+  let totalRows = first.length
+  const stride = first.length
+  if (stride <= 0) return totalRows
 
   const inFlight: Map<number, Promise<TransferRow[]>> = new Map()
-
-  const seed = Math.max(1, concurrency)
-  for (let i = 0; i < seed; i++) {
-    inFlight.set(i, fetchPage(i * pageSize, pageSize))
+  const startFetch = (pageIdx: number) => {
+    const offset = pageIdx * stride
+    inFlight.set(pageIdx, fetchPage(offset, pageSize))
   }
-  let nextToSchedule = seed
-  let noMore = false
+  const seed = Math.max(0, concurrency - 1)
+  for (let i = 1; i <= seed; i++) startFetch(i)
 
-  for (let page = 0; ; page++) {
+  let nextToSchedule = seed + 1
+  let done = false
+  for (let page = 1; !done; page++) {
     const p = inFlight.get(page)
     if (!p) break
     const rows = await p
     inFlight.delete(page)
     if (rows.length === 0) {
-      noMore = true
+      done = true
     } else {
       await writer(rows)
-      rowCount += rows.length
-      if (rows.length < pageSize) {
-        noMore = true
+      totalRows += rows.length
+      if (rows.length < stride) {
+        done = true
       }
     }
-    if (!noMore) {
-      inFlight.set(nextToSchedule, fetchPage(nextToSchedule * pageSize, pageSize))
-      nextToSchedule++
+    if (!done) {
+      startFetch(nextToSchedule)
+      nextToSchedule += 1
     }
   }
 
-  return rowCount
+  return totalRows
 }
 
 /**
@@ -296,13 +334,7 @@ const main = async (): Promise<void> => {
   const whereD2C = toWhereD2C(config.domainStart, config.domainEnd)
   const whereC2D = toWhereC2D(config.consensusStart, config.consensusEnd)
 
-  const d2cOut = createOutput(dir, 'd2c_transfers', config.exportFormat)
-  const c2dOut = createOutput(dir, 'c2d_transfers', config.exportFormat)
-
-  if (config.exportFormat === 'csv') {
-    await d2cOut.write(FIELDS.join(',') + '\n')
-    await c2dOut.write(FIELDS.join(',') + '\n')
-  }
+  // Outputs are created per direction within exportOneDirection
 
   const writeRows = async (
     rows: TransferRow[],
@@ -323,25 +355,41 @@ const main = async (): Promise<void> => {
     }
   }
 
-  const d2cCount = await writeRowsWithConcurrency(
-    {
-      fetchPage: fetchD2CPages(whereD2C),
-      pageSize: config.pageSize,
-      concurrency: config.concurrency,
-    },
-    async (rows) => writeRows(rows, d2cOut, config.exportFormat),
-  )
-  await d2cOut.end()
+  const exportOneDirection = async (
+    label: 'D2C' | 'C2D',
+    where: any,
+    baseName: string,
+    fetchFactory: (w: any) => (offset: number, limit: number) => Promise<TransferRow[]>,
+  ): Promise<{ count: number; artifactPath: string }> => {
+    console.log(
+      JSON.stringify(
+        { message: `[export] ${label} start`, where, pageSize: config.pageSize },
+        null,
+        2,
+      ),
+    )
+    const out = createOutput(dir, baseName, config.exportFormat)
+    if (config.exportFormat === 'csv') {
+      await out.write(FIELDS.join(',') + '\n')
+    }
+    const fetchPage = fetchFactory(where)
+    const count = await (config.concurrency > 1
+      ? writeRowsConcurrent(
+          { fetchPage, pageSize: config.pageSize, concurrency: config.concurrency },
+          async (rows) => writeRows(rows, out, config.exportFormat),
+        )
+      : writeRowsSequential({ fetchPage, pageSize: config.pageSize }, async (rows) =>
+          writeRows(rows, out, config.exportFormat),
+        ))
+    await out.end()
+    console.log(JSON.stringify({ message: `[export] ${label} done`, rows: count }, null, 2))
+    return { count, artifactPath: relative(dir, out.filePath) }
+  }
 
-  const c2dCount = await writeRowsWithConcurrency(
-    {
-      fetchPage: fetchC2DPages(whereC2D),
-      pageSize: config.pageSize,
-      concurrency: config.concurrency,
-    },
-    async (rows) => writeRows(rows, c2dOut, config.exportFormat),
-  )
-  await c2dOut.end()
+  const [d2c, c2d] = await Promise.all([
+    exportOneDirection('D2C', whereD2C, 'd2c_transfers', fetchD2CPages),
+    exportOneDirection('C2D', whereC2D, 'c2d_transfers', fetchC2DPages),
+  ])
 
   const manifest = {
     exportedAt: new Date().toISOString(),
@@ -357,14 +405,10 @@ const main = async (): Promise<void> => {
       domainEndHeight: config.domainEnd ?? null,
     },
     pageSize: config.pageSize,
-    rowCounts: { d2c: d2cCount, c2d: c2dCount },
+    rowCounts: { d2c: d2c.count, c2d: c2d.count },
     artifacts: {
-      d2c: {
-        path: relative(dir, d2cOut.filePath),
-      },
-      c2d: {
-        path: relative(dir, c2dOut.filePath),
-      },
+      d2c: { path: d2c.artifactPath },
+      c2d: { path: c2d.artifactPath },
     },
   }
 
