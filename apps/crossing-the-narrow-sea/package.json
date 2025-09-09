@@ -20,13 +20,9 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "introspect": "tsx src/indexer-based/introspect.ts",
-    "derive-domain-window": "tsx src/indexer-based/derive-domain-window.ts",
-    "counts": "tsx src/indexer-based/counts.ts",
-    "export": "tsx src/indexer-based/export.ts",
-    "node:capture:consensus": "tsx src/node-based/capture-consensus.ts",
-    "node:capture:domain": "tsx src/node-based/capture-domain.ts",
-    "node:match": "tsx src/node-based/match.ts",
-    "node:counts": "tsx src/node-based/counts.ts"
+    "capture:consensus": "tsx src/capture-consensus.ts",
+    "capture:domain": "tsx src/capture-domain.ts",
+    "match": "tsx src/match.ts",
+    "counts": "tsx src/counts.ts"
   }
 }
