@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { getApi, getEventsAt } from './chain'
-import { openDb, getLastProcessedSourceInitHeight } from './sqlite'
+import { openDb, getLastProcessedBlockHeight, setLastProcessedBlockHeight } from './sqlite'
 import { processXdmEvents } from './event-utils'
 
 const DOMAIN_RPC_URL = process.env.DOMAIN_RPC_URL as string
@@ -22,8 +22,8 @@ const main = async () => {
 
   const api = await getApi(rpcEndpoints)
   const db = openDb(DB_PATH)
-  const resumeFrom = getLastProcessedSourceInitHeight(db, 'domain')
-  const scanStart = Math.max(START, (resumeFrom ?? START) + 1)
+  const resumeFrom = getLastProcessedBlockHeight(db, 'domain')
+  const scanStart = Math.max(START, resumeFrom ?? START)
   const total = END - scanStart + 1
   console.log(`[domain] capture start: heights ${scanStart}..${END} (total ${Math.max(total, 0)})`)
 
@@ -37,6 +37,7 @@ const main = async () => {
       const extrinsics = block.block.extrinsics
       if (h % 100 === 0) {
         console.log(`[domain] processing #${h}`)
+        setLastProcessedBlockHeight(db, 'domain', h)
       }
 
       processXdmEvents({

@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { getApi } from './chain'
-import { openDb, getLastProcessedSourceInitHeight } from './sqlite'
+import { openDb, getLastProcessedBlockHeight, setLastProcessedBlockHeight } from './sqlite'
 import { processXdmEvents } from './event-utils'
 
 const CONSENSUS_RPC_URL = process.env.CONSENSUS_RPC_URL as string
@@ -21,8 +21,8 @@ const main = async () => {
 
   const api = await getApi(rpcEndpoints)
   const db = openDb(DB_PATH)
-  const resumeFrom = getLastProcessedSourceInitHeight(db, 'consensus')
-  const scanStart = Math.max(START, (resumeFrom ?? START) + 1)
+  const resumeFrom = getLastProcessedBlockHeight(db, 'consensus')
+  const scanStart = Math.max(START, resumeFrom ?? START)
   const total = END - scanStart + 1
   console.log(
     `[consensus] capture start: heights ${scanStart}..${END} (total ${Math.max(total, 0)})`,
@@ -37,6 +37,7 @@ const main = async () => {
       const extrinsics = block.block.extrinsics
       if (h % 100 === 0) {
         console.log(`[consensus] processing #${h}`)
+        setLastProcessedBlockHeight(db, 'consensus', h)
       }
 
       processXdmEvents({

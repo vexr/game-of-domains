@@ -83,6 +83,10 @@ export const ensureTables = (db: Database.Database) => {
     CREATE INDEX IF NOT EXISTS idx_src_init_key ON source_inits (channel_id, nonce, source_chain);
     CREATE INDEX IF NOT EXISTS idx_dst_succ_key ON destination_successes (channel_id, nonce, destination_chain);
     CREATE INDEX IF NOT EXISTS idx_src_ack_key ON source_acks (channel_id, nonce, source_chain);
+    CREATE TABLE IF NOT EXISTS scan_progress (
+      chain TEXT PRIMARY KEY,
+      last_block_height INTEGER NOT NULL
+    );
   `)
 }
 
@@ -145,13 +149,24 @@ export const upsertSourceAck = (db: Database.Database, row: SourceAck) => {
   stmt.run(row as any)
 }
 
-export const getLastProcessedSourceInitHeight = (
+export const getLastProcessedBlockHeight = (
   db: Database.Database,
-  sourceChain: 'consensus' | 'domain',
+  chain: 'consensus' | 'domain',
 ): number | null => {
   ensureTables(db)
   const row = db
-    .prepare('SELECT MAX(source_block_height) AS height FROM source_inits WHERE source_chain = ?')
-    .get(sourceChain) as { height: number | null } | undefined
+    .prepare('SELECT last_block_height AS height FROM scan_progress WHERE chain = ?')
+    .get(chain) as { height: number | null } | undefined
   return row?.height ?? null
+}
+
+export const setLastProcessedBlockHeight = (
+  db: Database.Database,
+  chain: 'consensus' | 'domain',
+  height: number,
+): void => {
+  ensureTables(db)
+  db.prepare(
+    'INSERT INTO scan_progress(chain, last_block_height) VALUES (?, ?) ON CONFLICT(chain) DO UPDATE SET last_block_height=excluded.last_block_height',
+  ).run(chain, height)
 }
