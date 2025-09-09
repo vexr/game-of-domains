@@ -54,34 +54,44 @@ const buildIterator = (
 
   const mapped: Iterable<MatchedTransferRow> = {
     [Symbol.iterator]: function* () {
-      for (const r of iter as any) {
-        const destOk = asBoolean(r.dest_present)
-        const ackOk = r.ack_result === 'Ok'
+      try {
+        for (const r of iter as any) {
+          const destOk = asBoolean(r.dest_present)
+          const ackOk = r.ack_result === 'Ok'
 
-        const include =
-          (ACK_MODE === 'dest-only' && destOk) ||
-          (ACK_MODE === 'ack-only' && ackOk) ||
-          (ACK_MODE === 'both' && (destOk || ackOk))
-        if (!include) continue
+          const include =
+            (ACK_MODE === 'dest-only' && destOk) ||
+            (ACK_MODE === 'ack-only' && ackOk) ||
+            (ACK_MODE === 'both' && (destOk || ackOk))
+          if (!include) continue
 
-        const confirmedBy: 'dest' | 'ack' | 'both' =
-          destOk && ackOk ? 'both' : destOk ? 'dest' : 'ack'
+          const confirmedBy: 'dest' | 'ack' | 'both' =
+            destOk && ackOk ? 'both' : destOk ? 'dest' : 'ack'
 
-        yield {
-          direction,
-          from: r.from_address || '',
-          channel_id: Number(r.channel_id),
-          nonce: String(r.nonce),
-          amount: String(r.dest_amount ?? r.amount ?? '0'),
-          source_block_height: Number(r.source_block_height),
-          source_block_hash: String(r.source_block_hash || ''),
-          source_extrinsic_index:
-            r.source_extrinsic_index != null ? Number(r.source_extrinsic_index) : null,
-          dest_block_height:
-            r.destination_block_height != null ? Number(r.destination_block_height) : null,
-          dest_block_hash:
-            r.destination_block_hash != null ? String(r.destination_block_hash) : null,
-          confirmed_by: confirmedBy,
+          yield {
+            direction,
+            from: r.from_address || '',
+            channel_id: Number(r.channel_id),
+            nonce: String(r.nonce),
+            amount: String(r.dest_amount ?? r.amount ?? '0'),
+            source_block_height: Number(r.source_block_height),
+            source_block_hash: String(r.source_block_hash || ''),
+            source_extrinsic_index:
+              r.source_extrinsic_index != null ? Number(r.source_extrinsic_index) : null,
+            dest_block_height:
+              r.destination_block_height != null ? Number(r.destination_block_height) : null,
+            dest_block_hash:
+              r.destination_block_hash != null ? String(r.destination_block_hash) : null,
+            confirmed_by: confirmedBy,
+          }
+        }
+      } finally {
+        try {
+          // Close DB when iteration completes or is interrupted
+          // @ts-ignore better-sqlite3 Database has close method
+          ;(db as any).close?.()
+        } catch {
+          // ignore close errors
         }
       }
     },
