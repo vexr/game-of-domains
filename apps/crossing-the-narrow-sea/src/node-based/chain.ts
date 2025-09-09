@@ -2,6 +2,7 @@ import { ApiPromise, WsProvider } from '@polkadot/api'
 
 let apiInstance: ApiPromise | null = null
 let providerInstance: WsProvider | null = null
+let isReconnecting = false
 
 const getOrCreateProvider = (rpcEndpoints: string[]): WsProvider => {
   if (providerInstance) return providerInstance
@@ -17,18 +18,39 @@ const getOrCreateProvider = (rpcEndpoints: string[]): WsProvider => {
   provider.on('disconnected', () => {
     console.warn('chain disconnected')
     // Do not tear down; allow WsProvider to auto-rotate/retry
+    void triggerReconnect()
   })
 
   provider.on('error', (err) => {
     console.error({ err }, 'chain provider error')
     // Do not tear down; allow WsProvider to auto-rotate/retry
+    void triggerReconnect()
   })
 
   return providerInstance
 }
 
+const triggerReconnect = async (): Promise<void> => {
+  if (!apiInstance || isReconnecting) return
+  if (apiInstance.isConnected) return
+  isReconnecting = true
+  try {
+    console.warn('chain api disconnected; attempting reconnect')
+    await apiInstance.connect()
+    await apiInstance.isReadyOrError
+    console.info('chain api reconnected')
+  } catch (err) {
+    console.warn({ err }, 'chain api reconnect attempt failed; provider will keep retrying')
+  } finally {
+    isReconnecting = false
+  }
+}
+
 export const getApi = async (rpcEndpoints: string[]): Promise<ApiPromise> => {
-  if (apiInstance && apiInstance.isConnected) {
+  if (apiInstance) {
+    if (apiInstance.isConnected) return apiInstance
+    await triggerReconnect()
+    await apiInstance.isReadyOrError
     return apiInstance
   }
 
@@ -40,6 +62,15 @@ export const getApi = async (rpcEndpoints: string[]): Promise<ApiPromise> => {
     apiInstance.on('error', (err) => {
       console.error({ err }, 'chain api error')
       // Keep provider alive; ApiPromise will recover when provider reconnects
+    })
+
+    apiInstance.on('connected', () => {
+      console.info('chain api connected')
+    })
+
+    apiInstance.on('disconnected', () => {
+      console.warn('chain api disconnected')
+      void triggerReconnect()
     })
 
     await apiInstance.isReadyOrError
