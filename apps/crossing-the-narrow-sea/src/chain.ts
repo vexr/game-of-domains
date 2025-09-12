@@ -1,4 +1,22 @@
 import { ApiPromise, WsProvider } from '@polkadot/api'
+import type { EventRecord, Header, Hash } from '@polkadot/types/interfaces'
+
+interface VecLike<T = unknown> {
+  toArray: () => T[]
+}
+interface OptionLike<T = unknown> {
+  isSome?: boolean
+  isNone?: boolean
+  unwrap: () => T
+}
+
+interface SystemModuleExtended {
+  events: { at: (hash: Hash | string) => Promise<unknown> }
+  eventSegments?: {
+    at: (hash: Hash | string, index: number) => Promise<unknown>
+  }
+  eventCount?: { at: (hash: Hash | string) => Promise<unknown> }
+}
 
 let apiInstance: ApiPromise | null = null
 let providerInstance: WsProvider | null = null
@@ -102,99 +120,67 @@ export const disconnectApi = async (): Promise<void> => {
   }
 }
 
-export const getFinalizedHeadAndHeader = async (api: ApiPromise) => {
+export const getFinalizedHeadAndHeader = async (
+  api: ApiPromise,
+): Promise<{ head: Hash; header: Header }> => {
   const head = await api.rpc.chain.getFinalizedHead()
   const header = await api.rpc.chain.getHeader(head)
   return { head, header }
 }
 
-export const getEventsAt = async (api: ApiPromise, hash: any, useSegments: boolean) => {
-  if (useSegments && (api.query as any)?.system?.eventSegments) {
+export const getEventsAt = async (
+  api: ApiPromise,
+  hash: Hash | string,
+  useSegments: boolean,
+): Promise<EventRecord[]> => {
+  const system = api.query.system as unknown as SystemModuleExtended
+  if (useSegments && system?.eventSegments) {
     try {
       const SEGMENT_SIZE = 100
-      const SEGMENT_CONCURRENCY = Math.max(1, Number(process.env.SEGMENT_CONCURRENCY || 8))
-      // Prefer using eventsCount if available to determine number of segments
-      let numSegments: number | null = null
-      if ((api.query as any)?.system?.eventsCount?.at) {
-        const countAny = await (api.query as any).system.eventsCount.at(hash)
-        const count = countAny?.toNumber ? countAny.toNumber() : Number(countAny?.toString?.() || 0)
-        if (Number.isFinite(count) && count > 0) {
-          numSegments = Math.ceil(count / SEGMENT_SIZE)
-        }
-      }
-
-      const flattened: any[] = []
-
-      const unwrapSegment = (seg: any): any[] => {
+      // Use storage at block to get precise count (prefer eventCount, fallback to eventsCount)
+      const countAny = system?.eventCount?.at ? await system.eventCount.at(hash) : null
+      const count = countAny ? Number(countAny) : 0
+      const lastIndex = Math.floor((count - 1) / SEGMENT_SIZE)
+      const flattened: EventRecord[] = []
+      const unwrapSegment = (seg: unknown): EventRecord[] => {
         // Option<Vec<EventRecord>> or Vec<EventRecord>
-        // @ts-ignore runtime unwrap checks
-        if (seg?.isSome !== undefined && typeof seg.unwrap === 'function') {
-          // @ts-ignore
-          if (seg.isNone) return []
-          // @ts-ignore
-          const unwrapped = seg.unwrap()
-          // @ts-ignore
-          return unwrapped?.toArray ? unwrapped.toArray() : []
+        const maybeOpt = seg as OptionLike<unknown>
+        if (typeof maybeOpt?.unwrap === 'function') {
+          // if Option, drop None
+          if ((maybeOpt as OptionLike<unknown>).isNone === true) return []
+          const unwrapped = maybeOpt.unwrap() as unknown
+          const vec = unwrapped as VecLike<EventRecord>
+          return typeof vec?.toArray === 'function' ? (vec.toArray() as EventRecord[]) : []
         }
-        // @ts-ignore
-        if (seg?.toArray) return seg.toArray()
+        const vec = seg as VecLike<EventRecord>
+        if (typeof vec?.toArray === 'function') return vec.toArray() as EventRecord[]
         return []
       }
 
-      const fetchSegment = async (index: number) =>
-        unwrapSegment(await (api.query as any).system.eventSegments.at(hash, index))
-
-      if (numSegments != null) {
-        for (let start = 0; start < numSegments; start += SEGMENT_CONCURRENCY) {
-          const end = Math.min(numSegments, start + SEGMENT_CONCURRENCY)
-          const results = await Promise.all(
-            Array.from({ length: end - start }, (_, offset) => fetchSegment(start + offset)),
-          )
-          for (const arr of results) {
-            if (!arr.length) continue
-            for (const e of arr) flattened.push(e)
-          }
-        }
-      } else if ((api.query as any).system.eventSegments.entriesAt) {
-        // entriesAt fallback (older api) – value is (Option<Vec<EventRecord>> | Vec<EventRecord>)
-        const entries = await (api.query as any).system.eventSegments.entriesAt(hash)
-        for (const [, value] of entries as any[]) {
-          const arr = unwrapSegment(value)
-          for (const e of arr) flattened.push(e)
-        }
-      } else {
-        // Blind scan up to a cap
-        const MAX_SEGMENTS = Number(process.env.EVENTS_MAX_SEGMENTS || 2048)
-        for (let i = 0; i < MAX_SEGMENTS; i++) {
-          const arr = await fetchSegment(i)
-          if (!arr.length) break
-          for (const e of arr) flattened.push(e)
-        }
+      // Fetch indexed segments 0..lastIndex explicitly at this block hash
+      for (let i = 0; i <= lastIndex; i++) {
+        const segVal = await system.eventSegments.at(hash, i)
+        const unwrapped = unwrapSegment(segVal)
+        for (const e of unwrapped) flattened.push(e)
       }
-
-      if (flattened.length > 0) {
-        // Deduplicate events that may appear in multiple segments
-        const seen = new Set<string>()
-        const unique: any[] = []
-        for (const rec of flattened) {
-          const ev = rec?.event ?? rec
-          const section = ev?.section || ''
-          const method = ev?.method || ''
-          const data = ev?.data?.toString?.() || ''
-          const phase = rec?.phase?.toString?.() || ''
-          const key = `${section}|${method}|${data}|${phase}`
-          if (!seen.has(key)) {
-            seen.add(key)
-            unique.push(rec)
-          }
-        }
-        return unique
-      }
-    } catch {
-      console.warn(
-        '[events] eventSegments unavailable or incompatible, falling back to system.events',
-      )
+      // Return all events from 0..lastIndex without deduplication
+      return flattened
+    } catch (err) {
+      console.warn({ err }, 'getEventsAt: eventSegments fetch failed')
+      // Do not fall back to system.events when eventSegments are present
+      throw new Error('Failed to fetch eventSegments for block')
     }
   }
-  return api.query.system.events.at(hash)
+  // Use legacy system.events for chains without eventSegments
+  const legacy: unknown = await (
+    api.query.system.events as unknown as {
+      at: (h: Hash | string) => Promise<unknown>
+    }
+  ).at(hash)
+  // Convert Vec<EventRecord> to EventRecord[] if possible
+  const unwrapLegacy = (val: unknown): EventRecord[] => {
+    const vec = val as VecLike<EventRecord>
+    return typeof vec?.toArray === 'function' ? (vec.toArray() as EventRecord[]) : []
+  }
+  return unwrapLegacy(legacy)
 }
