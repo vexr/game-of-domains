@@ -26,6 +26,29 @@ export interface SourceInit {
   source_extrinsic_index: number | null
 }
 
+export interface SourceInitFailed {
+  source_chain: 'consensus' | 'domain'
+  dst_chain_id: number
+  channel_id: number
+  nonce: string
+  amount: string
+  source_block_height: number
+  source_block_hash: string
+  source_extrinsic_index: number | null
+  failure_reason: string
+}
+
+export interface EventFailure {
+  chain: 'consensus' | 'domain'
+  block_height: number
+  block_hash: string
+  extrinsic_index: number | null
+  section: string
+  method: string
+  reason: string
+  details?: string
+}
+
 export interface DestinationSuccess {
   destination_chain: 'consensus' | 'domain'
   src_chain_id: number
@@ -60,6 +83,18 @@ export const ensureTables = (db: Database.Database) => {
       source_extrinsic_index INTEGER,
       PRIMARY KEY (source_chain, channel_id, nonce)
     );
+    CREATE TABLE IF NOT EXISTS source_inits_failed (
+      source_chain TEXT NOT NULL,
+      dst_chain_id INTEGER NOT NULL,
+      channel_id INTEGER NOT NULL,
+      nonce TEXT NOT NULL,
+      amount TEXT NOT NULL,
+      source_block_height INTEGER NOT NULL,
+      source_block_hash TEXT NOT NULL,
+      source_extrinsic_index INTEGER,
+      failure_reason TEXT NOT NULL,
+      PRIMARY KEY (source_chain, channel_id, nonce)
+    );
     CREATE TABLE IF NOT EXISTS destination_successes (
       destination_chain TEXT NOT NULL,
       src_chain_id INTEGER NOT NULL,
@@ -81,12 +116,25 @@ export const ensureTables = (db: Database.Database) => {
       PRIMARY KEY (source_chain, channel_id, nonce)
     );
     CREATE INDEX IF NOT EXISTS idx_src_init_key ON source_inits (channel_id, nonce, source_chain);
+    CREATE INDEX IF NOT EXISTS idx_src_init_failed_key ON source_inits_failed (channel_id, nonce, source_chain);
     CREATE INDEX IF NOT EXISTS idx_dst_succ_key ON destination_successes (channel_id, nonce, destination_chain);
     CREATE INDEX IF NOT EXISTS idx_src_ack_key ON source_acks (channel_id, nonce, source_chain);
     CREATE TABLE IF NOT EXISTS scan_progress (
       chain TEXT PRIMARY KEY,
       last_block_height INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS event_failures (
+      chain TEXT NOT NULL,
+      block_height INTEGER NOT NULL,
+      block_hash TEXT NOT NULL,
+      extrinsic_index INTEGER,
+      section TEXT NOT NULL,
+      method TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      details TEXT,
+      created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_event_failures_block ON event_failures (block_height, chain);
   `)
 }
 
@@ -107,6 +155,39 @@ export const upsertSourceInit = (db: Database.Database, row: SourceInit) => {
       source_block_height=excluded.source_block_height,
       source_block_hash=excluded.source_block_hash,
       source_extrinsic_index=excluded.source_extrinsic_index
+  `)
+  stmt.run(row as any)
+}
+
+export const upsertSourceInitFailed = (db: Database.Database, row: SourceInitFailed) => {
+  ensureTables(db)
+  const stmt = db.prepare(`
+    INSERT INTO source_inits_failed (
+      source_chain, dst_chain_id, channel_id, nonce, amount,
+      source_block_height, source_block_hash, source_extrinsic_index, failure_reason
+    ) VALUES (
+      @source_chain, @dst_chain_id, @channel_id, @nonce, @amount,
+      @source_block_height, @source_block_hash, @source_extrinsic_index, @failure_reason
+    )
+    ON CONFLICT(source_chain, channel_id, nonce) DO UPDATE SET
+      dst_chain_id=excluded.dst_chain_id,
+      amount=excluded.amount,
+      source_block_height=excluded.source_block_height,
+      source_block_hash=excluded.source_block_hash,
+      source_extrinsic_index=excluded.source_extrinsic_index,
+      failure_reason=excluded.failure_reason
+  `)
+  stmt.run(row as any)
+}
+
+export const insertEventFailure = (db: Database.Database, row: EventFailure) => {
+  ensureTables(db)
+  const stmt = db.prepare(`
+    INSERT INTO event_failures (
+      chain, block_height, block_hash, extrinsic_index, section, method, reason, details
+    ) VALUES (
+      @chain, @block_height, @block_hash, @extrinsic_index, @section, @method, @reason, @details
+    )
   `)
   stmt.run(row as any)
 }
