@@ -4,7 +4,7 @@ Minimal app for analyzing the Game of Domains “Crossing the Narrow Sea” tria
 
 - Goal: compute per-wallet counts of cross-domain transfers (Consensus ↔ Domain:0)
 - Approach: node-based capture → write to SQLite → offline match/aggregate
-- Details: see `docs/requirements-node-based.md` and `docs/xdm-correlation.md`
+- Details: see `docs/requirements.md` and `docs/xdm-correlation.md`
 
 ## Quick start
 
@@ -27,11 +27,12 @@ CONSENSUS_END_HEIGHT=2460732
 DOMAIN_START_HEIGHT=1060691
 DOMAIN_END_HEIGHT=1561826
 
-# Optional
+# Options
 OUTPUT_DIR=exports
-LOG_EVERY=1000
+BLOCK_CONCURRENCY=8
 RPC_BACKOFF_MS=1000
 RPC_MAX_BACKOFF_MS=10000
+ACK_MODE=dest-only
 ```
 
 3. Run capture scripts
@@ -53,5 +54,5 @@ yarn workspace crossing-the-narrow-sea counts
 
 - `capture:consensus` — scan consensus blocks and persist evidence to SQLite
 - `capture:domain` — scan domain blocks and persist evidence to SQLite
-- `match` — offline join by `(channel_id, nonce)` to produce confirmed transfers
-- `counts` — aggregate per-wallet counts by direction from matched transfers
+- `match` — offline join by `(channel_id, nonce)` using `ACK_MODE`; writes `d2c_transfers.ndjson` and `c2d_transfers.ndjson`
+- `counts` — aggregate per-wallet counts by direction from NDJSON; writes `counts_per_wallet.json`
