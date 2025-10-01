@@ -19,7 +19,7 @@ yarn install
 ```
 # RPC endpoints (comma-separated allowed for failover)
 CONSENSUS_RPC_URL=wss://rpc-0.taurus.autonomys.xyz/ws
-DOMAIN_RPC_URL=wss://rpc-0.domain-0.autonomys.xyz/ws
+DOMAIN_RPC_URL=wss://auto-evm-0.taurus.autonomys.xyz/ws
 
 # Trial window
 CONSENSUS_START_HEIGHT=1740677
