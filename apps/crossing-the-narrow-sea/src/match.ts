@@ -3,8 +3,6 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { openDb } from './sqlite'
 
-type AckMode = 'dest-only' | 'ack-only' | 'both'
-
 interface MatchedTransferRow {
   direction: 'd2c' | 'c2d'
   from: string
@@ -16,12 +14,10 @@ interface MatchedTransferRow {
   source_extrinsic_index: number | null
   dest_block_height: number | null
   dest_block_hash: string | null
-  confirmed_by: 'dest' | 'ack' | 'both'
 }
 
 const OUTPUT_DIR = process.env.OUTPUT_DIR || 'exports'
 const DB_PATH = `${OUTPUT_DIR}/xdm.sqlite`
-const ACK_MODE: AckMode = (process.env.ACK_MODE as AckMode) || 'dest-only'
 
 const ensureDir = (dirPath: string): void => {
   if (!fs.existsSync(dirPath)) {
@@ -57,16 +53,9 @@ const buildIterator = (
       try {
         for (const r of iter as any) {
           const destOk = asBoolean(r.dest_present)
-          const ackOk = r.ack_result === 'Ok'
 
-          const include =
-            (ACK_MODE === 'dest-only' && destOk) ||
-            (ACK_MODE === 'ack-only' && ackOk) ||
-            (ACK_MODE === 'both' && (destOk || ackOk))
-          if (!include) continue
-
-          const confirmedBy: 'dest' | 'ack' | 'both' =
-            destOk && ackOk ? 'both' : destOk ? 'dest' : 'ack'
+          // Only include transfers with destination success
+          if (!destOk) continue
 
           yield {
             direction,
@@ -82,7 +71,6 @@ const buildIterator = (
               r.destination_block_height != null ? Number(r.destination_block_height) : null,
             dest_block_hash:
               r.destination_block_hash != null ? String(r.destination_block_hash) : null,
-            confirmed_by: confirmedBy,
           }
         }
       } finally {
@@ -113,13 +101,10 @@ const main = async () => {
       ds.amount AS dest_amount,
       ds.destination_block_height,
       ds.destination_block_hash,
-      CASE WHEN ds.destination_chain IS NOT NULL THEN 1 ELSE NULL END AS dest_present,
-      a.result AS ack_result
+      CASE WHEN ds.destination_chain IS NOT NULL THEN 1 ELSE NULL END AS dest_present
     FROM source_inits i
     LEFT JOIN destination_successes ds
       ON ds.channel_id = i.channel_id AND ds.nonce = i.nonce AND ds.destination_chain = 'consensus'
-    LEFT JOIN source_acks a
-      ON a.channel_id = i.channel_id AND a.nonce = i.nonce AND a.source_chain = 'domain'
     WHERE i.source_chain = 'domain'
   `
 
@@ -135,13 +120,10 @@ const main = async () => {
       ds.amount AS dest_amount,
       ds.destination_block_height,
       ds.destination_block_hash,
-      CASE WHEN ds.destination_chain IS NOT NULL THEN 1 ELSE NULL END AS dest_present,
-      a.result AS ack_result
+      CASE WHEN ds.destination_chain IS NOT NULL THEN 1 ELSE NULL END AS dest_present
     FROM source_inits i
     LEFT JOIN destination_successes ds
       ON ds.channel_id = i.channel_id AND ds.nonce = i.nonce AND ds.destination_chain = 'domain'
-    LEFT JOIN source_acks a
-      ON a.channel_id = i.channel_id AND a.nonce = i.nonce AND a.source_chain = 'consensus'
     WHERE i.source_chain = 'consensus'
   `
 
@@ -159,7 +141,6 @@ const main = async () => {
       {
         output_dir: OUTPUT_DIR,
         db_path: DB_PATH,
-        ack_mode: ACK_MODE,
         files: {
           d2c_transfers: d2cPath,
           c2d_transfers: c2dPath,

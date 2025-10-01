@@ -32,7 +32,6 @@ OUTPUT_DIR=exports
 BLOCK_CONCURRENCY=8
 RPC_BACKOFF_MS=1000
 RPC_MAX_BACKOFF_MS=10000
-ACK_MODE=dest-only
 ```
 
 3. Run capture scripts

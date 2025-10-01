@@ -18,7 +18,7 @@
 - Directionality
   - Domain → Consensus (D→C): count by source signer on domain (SS58)
   - Consensus → Domain (C→D): count by source signer on consensus (SS58)
-- Inclusion is controlled by `ACK_MODE` in the match step.
+- Only transfers with confirmed destination success (`IncomingTransferSuccessful`) are counted.
 
 ### Node-only approach (no indexer)
 
@@ -64,10 +64,9 @@ Using public RPCs is fine but expect rate limits. Controls provided:
 
 - Match (offline join)
   - Script: `match`
-  - Env: `ACK_MODE=dest-only | ack-only | both` (default `dest-only`)
   - Produces two NDJSON files in `${OUTPUT_DIR}`:
-    - `d2c_transfers.ndjson` — rows from domain source, confirmed per `ACK_MODE`
-    - `c2d_transfers.ndjson` — rows from consensus source, confirmed per `ACK_MODE`
+    - `d2c_transfers.ndjson` — rows from domain source with destination success
+    - `c2d_transfers.ndjson` — rows from consensus source with destination success
   - Each NDJSON row has the shape:
     - `direction` ("d2c" | "c2d")
     - `from` (SS58 signer on the source chain)
@@ -75,7 +74,6 @@ Using public RPCs is fine but expect rate limits. Controls provided:
     - `amount` (destination amount if present, else source amount; string)
     - `source_block_height`, `source_block_hash`, `source_extrinsic_index`
     - `dest_block_height`, `dest_block_hash`
-    - `confirmed_by` ("dest" | "ack" | "both")
 
 - Aggregate
   - Script: `counts`
@@ -105,11 +103,7 @@ yarn workspace crossing-the-narrow-sea counts
   - `RPC_BACKOFF_MS` (default: 1000)
   - `RPC_MAX_BACKOFF_MS` (default: 10000)
 
-- Match
-  - `OUTPUT_DIR` (default: `exports`)
-  - `ACK_MODE` (default: `dest-only`)
-
-- Counts
+- Match & Counts
   - `OUTPUT_DIR` (default: `exports`)
 
 Notes:
